@@ -164,6 +164,7 @@ async function scanPhotos(force = false) {
     const photos = files.map(file => ({
       id: file.id,
       name: file.name,
+      group: file.relative.includes('/') ? file.relative.slice(0, file.relative.lastIndexOf('/')) : '',
       modifiedAt: file.modifiedAt,
       size: file.size,
       url: `/media/${file.id}?v=${file.modifiedAt}-${file.size}`

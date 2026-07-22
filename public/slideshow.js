@@ -13,7 +13,7 @@ let photos = [];
 let manifestVersion = '';
 let queue = [];
 let played = new Set();
-let currentPhotoId = null;
+let currentPhotoId = localStorage.getItem('remote-slides-last-photo') || null;
 let advancing = false;
 let slideTimer = null;
 let lastTransitionAt = Date.now();
@@ -160,12 +160,40 @@ async function getPhotoBlob(photo) {
   return promise;
 }
 
-function shuffle(items) {
-  for (let index = items.length - 1; index > 0; index--) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
-    [items[index], items[randomIndex]] = [items[randomIndex], items[index]];
+function randomIndex(maxExclusive) {
+  if (maxExclusive <= 1) return 0;
+  if (globalThis.crypto?.getRandomValues) {
+    const range = 0x100000000;
+    const limit = range - (range % maxExclusive);
+    const value = new Uint32Array(1);
+    do globalThis.crypto.getRandomValues(value); while (value[0] >= limit);
+    return value[0] % maxExclusive;
   }
-  return items;
+  return Math.floor((Math.random() + performance.now() % 1) % 1 * maxExclusive);
+}
+
+function groupOf(photo) {
+  return photo?.group || '';
+}
+
+function pickVariedCandidate(candidates) {
+  if (candidates.length === 0) return null;
+  const recentGroups = [];
+  if (currentPhotoId) {
+    const current = photos.find(photo => photo.id === currentPhotoId);
+    if (current) recentGroups.push(groupOf(current));
+  }
+  for (let index = queue.length - 1; index >= 0 && recentGroups.length < 3; index--) {
+    const group = groupOf(queue[index]);
+    if (!recentGroups.includes(group)) recentGroups.push(group);
+  }
+
+  let pool = candidates.filter(photo => !recentGroups.includes(groupOf(photo)));
+  if (pool.length === 0 && recentGroups.length > 0) {
+    pool = candidates.filter(photo => groupOf(photo) !== recentGroups[0]);
+  }
+  if (pool.length === 0) pool = candidates;
+  return pool[randomIndex(pool.length)];
 }
 
 function refillQueue() {
@@ -177,8 +205,11 @@ function refillQueue() {
     if (currentPhotoId) played.add(currentPhotoId);
     candidates = photos.filter(photo => !queued.has(photo.id) && photo.id !== currentPhotoId);
   }
-  shuffle(candidates);
-  while (queue.length < QUEUE_SIZE && candidates.length > 0) queue.push(candidates.shift());
+  while (queue.length < QUEUE_SIZE && candidates.length > 0) {
+    const next = pickVariedCandidate(candidates);
+    queue.push(next);
+    candidates.splice(candidates.indexOf(next), 1);
+  }
 }
 
 function prefetchSlides() {
@@ -197,7 +228,7 @@ function showPhoto(blob) {
 
   next.image.style.transition = 'none';
   next.image.style.transform = 'scale(1)';
-  next.image.style.transformOrigin = origins[Math.floor(Math.random() * origins.length)];
+  next.image.style.transformOrigin = origins[randomIndex(origins.length)];
   next.background.style.transition = 'none';
   next.image.src = newUrl;
   next.background.src = newUrl;
@@ -231,8 +262,9 @@ async function advanceSlide() {
   let photo;
   try {
     refillQueue();
-    photo = queue.shift() || photos[Math.floor(Math.random() * photos.length)];
+    photo = queue.shift() || photos[randomIndex(photos.length)];
     currentPhotoId = photo.id;
+    localStorage.setItem('remote-slides-last-photo', photo.id);
     played.add(photo.id);
     refillQueue();
     prefetchSlides();
