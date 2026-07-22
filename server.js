@@ -17,6 +17,7 @@ const PORT = Number(process.env.PORT || 8080);
 const SCAN_TTL_MS = 10_000;
 const IMAGE_WIDTH = 1920;
 const IMAGE_HEIGHT = 1080;
+const MANIFEST_SCHEMA_VERSION = 2;
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -158,6 +159,7 @@ async function scanPhotos(force = false) {
 
     const files = [...found.values()].sort((a, b) => compareNames(a.relative, b.relative));
     const versionHash = crypto.createHash('sha256');
+    versionHash.update(`schema:${MANIFEST_SCHEMA_VERSION}\n`);
     for (const file of files) versionHash.update(`${file.relative}\0${file.size}\0${file.modifiedAt}\n`);
     const version = versionHash.digest('base64url').slice(0, 20);
     const photoFiles = new Map(files.map(file => [file.id, file]));
