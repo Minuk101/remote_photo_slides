@@ -322,7 +322,7 @@ async function applyManifest(result, initial = false, cachedOnlyIds = null) {
     manifestVersion = cachedOnlyIds ? '' : (result.version || '');
     const validIds = new Set(photos.map(photo => photo.id));
     played = new Set([...played].filter(id => validIds.has(id)));
-    queue = queue.filter(photo => validIds.has(photo.id));
+    queue = [];
     if (!cachedOnlyIds) removeStaleCache(validIds);
 
     if (photos.length === 0) {
