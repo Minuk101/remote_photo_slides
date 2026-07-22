@@ -1,0 +1,16 @@
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
+body { color: #fff; font-family: "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif; }
+#slideshow { position: relative; width: 100vw; height: 100vh; height: 100dvh; background: #000; }
+.bg-layer { position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: 0; object-fit: cover; filter: blur(25px) brightness(.7); opacity: 0; transition: opacity 2s; }
+.main-img { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; object-fit: contain; object-position: center; opacity: 0; transition: opacity 2s; }
+.empty-state { position: fixed; inset: 0; z-index: 5; display: grid; place-content: center; justify-items: center; padding: 30px; background: #090a08; text-align: center; }
+.empty-state.hidden { display: none; }
+.empty-state strong { font-size: clamp(24px, 5vw, 44px); }
+.empty-state p { margin: 12px 0 22px; color: #9da397; }
+.empty-state a { padding: 11px 16px; border-radius: 999px; background: #d5f06b; color: #172000; font-weight: 800; text-decoration: none; }
+.controls { position: fixed; right: 16px; bottom: 14px; z-index: 10; display: flex; gap: 5px; opacity: .07; transition: opacity .25s; }
+.controls:hover, .controls:focus-within { opacity: 1; }
+.controls a, .controls button { border: 0; padding: 7px 9px; background: rgba(0,0,0,.58); color: #fff; font: 11px system-ui, sans-serif; text-decoration: none; cursor: pointer; }
+.connection-message { position: fixed; left: 50%; bottom: 16px; z-index: 8; transform: translateX(-50%); margin: 0; padding: 8px 12px; border-radius: 999px; background: rgba(0,0,0,.65); color: rgba(255,255,255,.75); font: 12px system-ui, sans-serif; opacity: 0; transition: opacity .3s; pointer-events: none; }
+.connection-message.visible { opacity: 1; }
+
