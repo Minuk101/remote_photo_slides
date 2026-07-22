@@ -7,11 +7,12 @@ import AdmZip from 'adm-zip';
 import exifr from 'exifr';
 
 const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
+const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
 const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
-const MAX_LANDMARK_DISTANCE_KM = 2;
-const LOCATION_SCHEMA_VERSION = 1;
+const MAX_LANDMARK_DISTANCE_KM = 0.3;
+const LOCATION_SCHEMA_VERSION = 3;
 
 const LANDMARK_CODES = new Set([
   'AIRP', 'AMTH', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
@@ -28,6 +29,10 @@ function gridKey(latitude, longitude, size) {
 function localizedName(name, asciiName, alternateNames = '') {
   const alternatives = alternateNames.split(',');
   return alternatives.find(value => /[가-힣]/.test(value)) || name || asciiName;
+}
+
+function normalizedName(value = '') {
+  return value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
 }
 
 function countryName(countryCode) {
@@ -76,6 +81,50 @@ function nearestFromGrid(grid, latitude, longitude, size, maxDistanceKm) {
   return nearest && nearestDistance <= maxDistanceKm ? { ...nearest, distanceKm: nearestDistance } : null;
 }
 
+function ringContainsPoint(ring, longitude, latitude) {
+  let inside = false;
+  for (let current = 0, previous = ring.length - 1; current < ring.length; previous = current++) {
+    const [currentLon, currentLat] = ring[current];
+    const [previousLon, previousLat] = ring[previous];
+    const intersects = (currentLat > latitude) !== (previousLat > latitude)
+      && longitude < ((previousLon - currentLon) * (latitude - currentLat)) / (previousLat - currentLat) + currentLon;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function polygonContainsPoint(polygon, longitude, latitude) {
+  if (!polygon.length || !ringContainsPoint(polygon[0], longitude, latitude)) return false;
+  return !polygon.slice(1).some(hole => ringContainsPoint(hole, longitude, latitude));
+}
+
+function geometryContainsPoint(geometry, longitude, latitude) {
+  if (geometry.type === 'Polygon') return polygonContainsPoint(geometry.coordinates, longitude, latitude);
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates.some(polygon => polygonContainsPoint(polygon, longitude, latitude));
+  }
+  return false;
+}
+
+function geometryBounds(geometry) {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  const visit = value => {
+    if (typeof value[0] === 'number') {
+      minLon = Math.min(minLon, value[0]);
+      maxLon = Math.max(maxLon, value[0]);
+      minLat = Math.min(minLat, value[1]);
+      maxLat = Math.max(maxLat, value[1]);
+    } else {
+      value.forEach(visit);
+    }
+  };
+  visit(geometry.coordinates);
+  return { minLon, minLat, maxLon, maxLat };
+}
+
 async function exists(filePath) {
   try {
     await stat(filePath);
@@ -108,9 +157,12 @@ export class LocationService {
     this.dataDirectory = dataDirectory;
     this.cacheFile = path.join(dataDirectory, 'photo-locations.json');
     this.citiesZip = path.join(dataDirectory, 'cities500.zip');
+    this.countryInfoFile = path.join(dataDirectory, 'countryInfo.txt');
     this.metadata = new Map();
     this.cityGrid = null;
     this.landmarkGrids = new Map();
+    this.adminBoundaries = new Map();
+    this.iso3Codes = new Map();
     this.countryJobs = new Map();
     this.preparePromise = null;
     this.indexPromise = null;
@@ -156,7 +208,16 @@ export class LocationService {
 
   async loadCities() {
     this.status.phase = '무료 세계 지명 데이터 준비 중';
-    await download(`${GEONAMES_BASE}/cities500.zip`, this.citiesZip);
+    await Promise.all([
+      download(`${GEONAMES_BASE}/cities500.zip`, this.citiesZip),
+      download(`${GEONAMES_BASE}/countryInfo.txt`, this.countryInfoFile)
+    ]);
+    const countryInfo = await readFile(this.countryInfoFile, 'utf8');
+    for (const line of countryInfo.split('\n')) {
+      if (!line || line.startsWith('#')) continue;
+      const fields = line.split('\t');
+      if (fields[0] && fields[1]) this.iso3Codes.set(fields[0], fields[1]);
+    }
     const text = zipText(this.citiesZip, 'cities500.txt');
     const grid = new Map();
     for (const line of text.split('\n')) {
@@ -190,9 +251,15 @@ export class LocationService {
       await download(`${GEONAMES_BASE}/${countryCode}.zip`, zipPath);
       const text = zipText(zipPath, `${countryCode}.txt`);
       const grid = new Map();
+      const adminNames = new Map();
       for (const line of text.split('\n')) {
         if (!line) continue;
         const fields = line.split('\t');
+        if (fields[6] === 'A' && fields[7] === 'ADM2') {
+          const localName = localizedName(fields[1], fields[2], fields[3]);
+          adminNames.set(normalizedName(fields[1]), localName);
+          adminNames.set(normalizedName(fields[2]), localName);
+        }
         if (!LANDMARK_CODES.has(fields[7])) continue;
         const latitude = Number(fields[4]);
         const longitude = Number(fields[5]);
@@ -204,12 +271,71 @@ export class LocationService {
           featureCode: fields[7]
         }, LANDMARK_GRID_SIZE);
       }
-      this.landmarkGrids.set(countryCode, grid);
-      return grid;
+      const bundle = { grid, adminNames };
+      this.landmarkGrids.set(countryCode, bundle);
+      return bundle;
     })().finally(() => this.countryJobs.delete(countryCode));
 
     this.countryJobs.set(countryCode, job);
     return job;
+  }
+
+  async loadAdminBoundaries(countryCode) {
+    if (!countryCode || this.adminBoundaries.has(countryCode)) return this.adminBoundaries.get(countryCode) || null;
+    const iso3 = this.iso3Codes.get(countryCode);
+    if (!iso3) {
+      this.adminBoundaries.set(countryCode, null);
+      return null;
+    }
+
+    let metadata = null;
+    let level = 'ADM2';
+    for (const candidate of ['ADM2', 'ADM1']) {
+      try {
+        const response = await fetch(`${GEOBOUNDARIES_API}/${iso3}/${candidate}/`, {
+          headers: { 'User-Agent': 'RemotePhotoSlides/1.0 (https://github.com/Minuk101/remote_photo_slides)' }
+        });
+        if (!response.ok) continue;
+        metadata = await response.json();
+        level = candidate;
+        break;
+      } catch {
+        // Try the next available administrative level.
+      }
+    }
+    if (!metadata?.simplifiedGeometryGeoJSON) {
+      this.adminBoundaries.set(countryCode, null);
+      return null;
+    }
+
+    const target = path.join(this.dataDirectory, `${countryCode}-${level}.geojson`);
+    await download(metadata.simplifiedGeometryGeoJSON, target);
+    const geojson = JSON.parse(await readFile(target, 'utf8'));
+    const adminNames = this.landmarkGrids.get(countryCode)?.adminNames || new Map();
+    const features = (geojson.features || []).map(feature => {
+      const sourceName = feature.properties?.shapeName || '';
+      const simpleName = sourceName.replace(/\s*\[.*?\]\s*/g, '');
+      return {
+        name: adminNames.get(normalizedName(sourceName))
+          || adminNames.get(normalizedName(simpleName))
+          || simpleName,
+        geometry: feature.geometry,
+        bounds: geometryBounds(feature.geometry)
+      };
+    });
+    this.adminBoundaries.set(countryCode, features);
+    return features;
+  }
+
+  findAdministrativeArea(countryCode, latitude, longitude) {
+    const features = this.adminBoundaries.get(countryCode);
+    if (!features) return '';
+    for (const feature of features) {
+      const bounds = feature.bounds;
+      if (longitude < bounds.minLon || longitude > bounds.maxLon || latitude < bounds.minLat || latitude > bounds.maxLat) continue;
+      if (geometryContainsPoint(feature.geometry, longitude, latitude)) return feature.name;
+    }
+    return '';
   }
 
   index(files, onComplete) {
@@ -299,6 +425,10 @@ export class LocationService {
       try { await this.loadCountryLandmarks(countryCode); } catch (error) {
         console.warn(`${countryCode} 랜드마크 데이터를 준비하지 못했습니다:`, error.message);
       }
+      this.status.phase = `${countryName(countryCode)} 행정구역 준비 중`;
+      try { await this.loadAdminBoundaries(countryCode); } catch (error) {
+        console.warn(`${countryCode} 행정구역 데이터를 준비하지 못했습니다:`, error.message);
+      }
     }
 
     this.status.phase = '가까운 장소 계산 중';
@@ -311,7 +441,13 @@ export class LocationService {
       if (!value.countryCode) {
         continue;
       }
-      const grid = this.landmarkGrids.get(value.countryCode);
+      const administrativeArea = this.findAdministrativeArea(
+        value.countryCode,
+        value.latitude,
+        value.longitude
+      );
+      if (administrativeArea) value.city = administrativeArea;
+      const grid = this.landmarkGrids.get(value.countryCode)?.grid;
       const landmark = nearestFromGrid(
         grid,
         value.latitude,
