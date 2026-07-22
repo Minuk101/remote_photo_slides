@@ -8,6 +8,7 @@ const elements = {
   serverDot: document.getElementById('server-dot'),
   serverStatus: document.getElementById('server-status'),
   rootPath: document.getElementById('root-path'),
+  locationStatus: document.getElementById('location-status'),
   breadcrumbs: document.getElementById('breadcrumbs'),
   folderList: document.getElementById('folder-list'),
   selectCurrent: document.getElementById('select-current'),
@@ -16,6 +17,17 @@ const elements = {
   saveButton: document.getElementById('save-selection'),
   saveMessage: document.getElementById('save-message')
 };
+
+async function refreshLocationStatus() {
+  try {
+    const status = await api('/api/location-status');
+    const progress = status.total ? ` · ${status.checked.toLocaleString()}/${status.total.toLocaleString()}장` : '';
+    const gps = status.gps ? ` · GPS ${status.gps.toLocaleString()}장` : '';
+    elements.locationStatus.textContent = `${status.phase}${progress}${gps}`;
+  } catch {
+    elements.locationStatus.textContent = '위치 기능 상태를 확인할 수 없습니다.';
+  }
+}
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -191,4 +203,5 @@ async function initialize() {
 }
 
 initialize();
-
+refreshLocationStatus();
+setInterval(refreshLocationStatus, 5000);

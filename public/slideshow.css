@@ -13,4 +13,10 @@ body { color: #fff; font-family: "Noto Sans KR", "Malgun Gothic", system-ui, san
 .controls a, .controls button { border: 0; padding: 7px 9px; background: rgba(0,0,0,.58); color: #fff; font: 11px system-ui, sans-serif; text-decoration: none; cursor: pointer; }
 .connection-message { position: fixed; left: 50%; bottom: 16px; z-index: 8; transform: translateX(-50%); margin: 0; padding: 8px 12px; border-radius: 999px; background: rgba(0,0,0,.65); color: rgba(255,255,255,.75); font: 12px system-ui, sans-serif; opacity: 0; transition: opacity .3s; pointer-events: none; }
 .connection-message.visible { opacity: 1; }
-
+.location-card { position: fixed; left: max(18px, env(safe-area-inset-left)); bottom: max(18px, env(safe-area-inset-bottom)); z-index: 7; display: flex; align-items: center; gap: 11px; max-width: min(78vw, 460px); padding: 11px 15px 11px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 16px; background: rgba(0,0,0,.58); color: #fff; text-decoration: none; opacity: 0; transform: translateY(10px); transition: opacity .4s, transform .4s; pointer-events: none; backdrop-filter: blur(8px); }
+.location-card.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.location-pin { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border: 2px solid rgba(255,255,255,.86); border-radius: 50% 50% 50% 0; color: #d5f06b; font-size: 10px; transform: rotate(-45deg); }
+.location-pin::first-letter { transform: rotate(45deg); }
+.location-card strong, .location-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.location-card strong { margin-bottom: 3px; font-size: clamp(13px, 2vw, 17px); }
+.location-card small { color: rgba(255,255,255,.65); font-size: clamp(10px, 1.5vw, 12px); }

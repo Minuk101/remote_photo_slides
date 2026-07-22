@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { LocationService } from './location-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -17,7 +18,7 @@ const PORT = Number(process.env.PORT || 8080);
 const SCAN_TTL_MS = 10_000;
 const IMAGE_WIDTH = 1920;
 const IMAGE_HEIGHT = 1080;
-const MANIFEST_SCHEMA_VERSION = 2;
+const MANIFEST_SCHEMA_VERSION = 3;
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -35,10 +36,12 @@ let manifestDirty = true;
 const imageJobs = new Map();
 let folderWatchers = [];
 let lastCacheCleanupAt = 0;
+const locationService = new LocationService(path.join(DATA_DIR, 'locations'));
 
 await mkdir(DATA_DIR, { recursive: true });
 await mkdir(CACHE_DIR, { recursive: true });
 await loadSettings();
+await locationService.loadCache();
 configureFolderWatchers();
 
 function json(response, status, value, headers = {}) {
@@ -160,13 +163,17 @@ async function scanPhotos(force = false) {
     const files = [...found.values()].sort((a, b) => compareNames(a.relative, b.relative));
     const versionHash = crypto.createHash('sha256');
     versionHash.update(`schema:${MANIFEST_SCHEMA_VERSION}\n`);
-    for (const file of files) versionHash.update(`${file.relative}\0${file.size}\0${file.modifiedAt}\n`);
+    for (const file of files) {
+      const location = locationService.get(file);
+      versionHash.update(`${file.relative}\0${file.size}\0${file.modifiedAt}\0${JSON.stringify(location)}\n`);
+    }
     const version = versionHash.digest('base64url').slice(0, 20);
     const photoFiles = new Map(files.map(file => [file.id, file]));
     const photos = files.map(file => ({
       id: file.id,
       name: file.name,
       group: file.relative.includes('/') ? file.relative.slice(0, file.relative.lastIndexOf('/')) : '',
+      location: locationService.get(file),
       modifiedAt: file.modifiedAt,
       size: file.size,
       url: `/media/${file.id}?v=${file.modifiedAt}-${file.size}`
@@ -174,6 +181,7 @@ async function scanPhotos(force = false) {
 
     manifest = { version, photos, photoFiles, scannedAt: Date.now() };
     manifestDirty = false;
+    locationService.index(files, () => { manifestDirty = true; });
     if (Date.now() - lastCacheCleanupAt > 10 * 60 * 1000) {
       lastCacheCleanupAt = Date.now();
       cleanupPlaybackCache(files).catch(error => console.warn('재생 캐시 정리 실패:', error.message));
@@ -311,6 +319,10 @@ const server = http.createServer(async (request, response) => {
         rootAvailable,
         selectedFolders: settings.selectedFolders
       });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/location-status') {
+      return json(response, 200, locationService.getStatus());
     }
 
     if (request.method === 'GET' && url.pathname === '/api/folders') {

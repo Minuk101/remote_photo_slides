@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/admin.js && node --check public/slideshow.js"
+    "check": "node --check server.js && node --check location-service.js && node --check public/admin.js && node --check public/slideshow.js"
   },
   "dependencies": {
+    "adm-zip": "^0.6.0",
+    "exifr": "^7.1.3",
     "sharp": "^0.35.3"
   },
   "engines": {

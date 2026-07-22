@@ -31,6 +31,10 @@ const emptyState = document.getElementById('empty-state');
 const emptyTitle = document.getElementById('empty-title');
 const emptyMessage = document.getElementById('empty-message');
 const connectionMessage = document.getElementById('connection-message');
+const locationCard = document.getElementById('location-card');
+const locationPrimary = document.getElementById('location-primary');
+const locationSecondary = document.getElementById('location-secondary');
+let locationTimer = null;
 
 function openDatabase() {
   if (databasePromise) return databasePromise;
@@ -218,7 +222,30 @@ function prefetchSlides() {
   }
 }
 
-function showPhoto(blob) {
+function formatDistance(meters) {
+  if (!meters) return '';
+  if (meters < 1000) return `${Math.max(50, Math.round(meters / 50) * 50)}m`;
+  return `${(meters / 1000).toFixed(meters < 10_000 ? 1 : 0)}km`;
+}
+
+function showLocation(location) {
+  clearTimeout(locationTimer);
+  locationCard.classList.remove('visible');
+  if (!location?.latitude || !location?.longitude) return;
+
+  const distance = formatDistance(location.landmarkDistanceMeters);
+  locationPrimary.textContent = location.landmark
+    ? `${location.landmark}${distance ? `에서 약 ${distance}` : ''}`
+    : (location.city || location.country || '사진 위치');
+  locationSecondary.textContent = location.landmark
+    ? [location.city, location.country].filter(Boolean).join(', ')
+    : (location.city && location.country ? location.country : '눌러서 지도에서 보기');
+  locationCard.href = `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`;
+  requestAnimationFrame(() => locationCard.classList.add('visible'));
+  locationTimer = setTimeout(() => locationCard.classList.remove('visible'), 4200);
+}
+
+function showPhoto(blob, photo) {
   const nextLayerIndex = activeLayer === 0 ? 1 : 0;
   const current = layers[activeLayer];
   const next = layers[nextLayerIndex];
@@ -244,6 +271,7 @@ function showPhoto(blob) {
 
   activeLayer = nextLayerIndex;
   activeObjectUrl = newUrl;
+  showLocation(photo.location);
   setTimeout(() => {
     current.image.removeAttribute('src');
     current.background.removeAttribute('src');
@@ -269,7 +297,7 @@ async function advanceSlide() {
     refillQueue();
     prefetchSlides();
     const blob = await getPhotoBlob(photo);
-    showPhoto(blob);
+    showPhoto(blob, photo);
     lastTransitionAt = Date.now();
     scheduleNext();
   } catch (error) {
