@@ -11,14 +11,18 @@ const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
 const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
-const MAX_LANDMARK_DISTANCE_KM = 0.3;
-const LOCATION_SCHEMA_VERSION = 3;
+const MAX_LANDMARK_DISTANCE_KM = 3;
+const LOCATION_SCHEMA_VERSION = 5;
 
 const LANDMARK_CODES = new Set([
-  'AIRP', 'AMTH', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
+  'AIRP', 'AMTH', 'AMUS', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
   'ISL', 'LK', 'MNMT', 'MSTY', 'MT', 'MUS', 'OPRA', 'PAL', 'PK', 'PRK',
   'PYR', 'RES', 'RSRT', 'RUIN', 'STDM', 'THTR', 'UNIV', 'VLC', 'ZOO'
 ]);
+
+const VERY_LARGE_LANDMARK_CODES = new Set(['AIRP', 'AMUS', 'RSRT']);
+const WIDE_LANDMARK_CODES = new Set(['PRK', 'RES', 'STDM', 'UNIV', 'ZOO']);
+const NATURAL_LANDMARK_CODES = new Set(['BCH', 'CAPE', 'CAVE', 'FLLS', 'GLCR', 'ISL', 'LK', 'MT', 'PK', 'VLC']);
 
 const countryNames = new Intl.DisplayNames(['ko'], { type: 'region' });
 
@@ -28,7 +32,9 @@ function gridKey(latitude, longitude, size) {
 
 function localizedName(name, asciiName, alternateNames = '') {
   const alternatives = alternateNames.split(',');
-  return alternatives.find(value => /[가-힣]/.test(value)) || name || asciiName;
+  const selected = alternatives.find(value => /[가-힣]/.test(value)) || name || asciiName;
+  if (/에버랜드/.test(selected) || /^everland$/i.test(asciiName)) return '에버랜드';
+  return selected;
 }
 
 function normalizedName(value = '') {
@@ -79,6 +85,35 @@ function nearestFromGrid(grid, latitude, longitude, size, maxDistanceKm) {
     if (nearest && nearestDistance <= Math.max(2, radius * size * 70)) break;
   }
   return nearest && nearestDistance <= maxDistanceKm ? { ...nearest, distanceKm: nearestDistance } : null;
+}
+
+function nearestRelevantLandmark(grid, latitude, longitude) {
+  if (!grid) return null;
+  const centerLat = Math.floor((latitude + 90) / LANDMARK_GRID_SIZE);
+  const centerLon = Math.floor((longitude + 180) / LANDMARK_GRID_SIZE);
+  const maxRadius = Math.ceil(MAX_LANDMARK_DISTANCE_KM / (LANDMARK_GRID_SIZE * 90));
+  let best = null;
+  let bestScore = Infinity;
+
+  for (let latOffset = -maxRadius; latOffset <= maxRadius; latOffset++) {
+    for (let lonOffset = -maxRadius; lonOffset <= maxRadius; lonOffset++) {
+      const items = grid.get(`${centerLat + latOffset}:${centerLon + lonOffset}`) || [];
+      for (const item of items) {
+        const distanceKm = haversineKm(latitude, longitude, item.latitude, item.longitude);
+        const allowedDistance = VERY_LARGE_LANDMARK_CODES.has(item.featureCode)
+          ? 3
+          : (WIDE_LANDMARK_CODES.has(item.featureCode) || NATURAL_LANDMARK_CODES.has(item.featureCode)) ? 1 : 0.3;
+        if (distanceKm > allowedDistance) continue;
+        const score = distanceKm / allowedDistance;
+        if (score < bestScore) {
+          best = item;
+          bestScore = score;
+          best.distanceKm = distanceKm;
+        }
+      }
+    }
+  }
+  return best;
 }
 
 function ringContainsPoint(ring, longitude, latitude) {
@@ -448,13 +483,7 @@ export class LocationService {
       );
       if (administrativeArea) value.city = administrativeArea;
       const grid = this.landmarkGrids.get(value.countryCode)?.grid;
-      const landmark = nearestFromGrid(
-        grid,
-        value.latitude,
-        value.longitude,
-        LANDMARK_GRID_SIZE,
-        MAX_LANDMARK_DISTANCE_KM
-      );
+      const landmark = nearestRelevantLandmark(grid, value.latitude, value.longitude);
       if (landmark && landmark.name !== value.city) {
         value.landmark = landmark.name;
         value.landmarkDistanceMeters = Math.round(landmark.distanceKm * 1000);
