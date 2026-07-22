@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import exifr from 'exifr';
+import { OsmLandmarkService } from './osm-landmark-service.js';
 
 const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
@@ -12,7 +13,7 @@ const CITY_GRID_SIZE = 0.5;
 const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
 const MAX_LANDMARK_DISTANCE_KM = 3;
-const LOCATION_SCHEMA_VERSION = 5;
+const LOCATION_SCHEMA_VERSION = 7;
 
 const LANDMARK_CODES = new Set([
   'AIRP', 'AMTH', 'AMUS', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
@@ -199,6 +200,7 @@ export class LocationService {
     this.adminBoundaries = new Map();
     this.iso3Codes = new Map();
     this.countryJobs = new Map();
+    this.osmLandmarks = new OsmLandmarkService(dataDirectory);
     this.preparePromise = null;
     this.indexPromise = null;
     this.status = { phase: '대기 중', total: 0, checked: 0, gps: 0, ready: 0 };
@@ -212,6 +214,7 @@ export class LocationService {
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn('GPS 캐시를 읽지 못했습니다:', error.message);
     }
+    await this.osmLandmarks.loadCache();
   }
 
   getStatus() {
@@ -382,7 +385,9 @@ export class LocationService {
         || cached.signature !== `${file.modifiedAt}-${file.size}`
         || !cached.resolved
         || cached.locationSchema !== LOCATION_SCHEMA_VERSION;
-    }) || [...this.metadata.keys()].some(relative => !current.has(relative));
+    })
+      || [...this.metadata.keys()].some(relative => !current.has(relative))
+      || this.osmLandmarks.hasPending([...this.metadata.values()]);
     if (!needsWork) {
       this.status = {
         phase: '위치 정보 준비 완료',
@@ -488,6 +493,19 @@ export class LocationService {
         value.landmark = landmark.name;
         value.landmarkDistanceMeters = Math.round(landmark.distanceKm * 1000);
       }
+    }
+
+    await this.osmLandmarks.ensureTiles([...this.metadata.values()], (completed, total) => {
+      this.status.phase = total
+        ? `유명 장소 자동 검색 중 · ${completed}/${total}개 지역`
+        : '유명 장소 자동 검색 완료';
+    });
+    for (const value of this.metadata.values()) {
+      if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+      const onlineLandmark = this.osmLandmarks.find(value.latitude, value.longitude);
+      if (!onlineLandmark || onlineLandmark.name === value.city) continue;
+      value.landmark = onlineLandmark.name;
+      value.landmarkDistanceMeters = Math.round(onlineLandmark.distanceKm * 1000);
     }
     await this.saveCache();
     this.status.ready = [...this.metadata.values()].filter(value => value.city || value.landmark).length;

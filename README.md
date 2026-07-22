@@ -13,6 +13,7 @@
 - 사진 EXIF의 GPS를 한 번만 분석해 PC에 저장
 - 무료 GeoNames 데이터로 가까운 도시와 랜드마크 표시
 - 무료 geoBoundaries 경계 자료로 실제 행정구역 내부 판정
+- OpenStreetMap과 Wikidata를 이용해 유명 장소를 자동 검색하고 PC에 영구 저장
 - 위치 문구를 누르면 API 키 없이 Google 지도에서 좌표 열기
 
 ## 실행
