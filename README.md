@@ -11,24 +11,41 @@
 - 사진 목록은 30초마다 자동 확인
 - 원본은 변경하지 않고 최대 1920×1080 재생용 사본을 서버 캐시에 생성
 - 사진 EXIF의 GPS를 한 번만 분석해 PC에 저장
-- 무료 GeoNames 데이터로 가까운 도시와 랜드마크 표시
+- 무료 GeoNames 데이터로 가까운 도시 표시
 - 무료 geoBoundaries 경계 자료로 실제 행정구역 내부 판정
-- OpenStreetMap과 Wikidata를 이용해 유명 장소를 자동 검색하고 PC에 영구 저장
 - 위치 문구를 누르면 API 키 없이 Google 지도에서 좌표 열기
 
 ## Google Places 랜드마크 (선택)
 
-관리 화면에서 Google Places API 키를 저장하면 유명 장소를 Google의 인기순 검색 결과로 다시 판별합니다. API 키와 검색 캐시는 GitHub에 올라가지 않는 `data` 폴더에만 저장됩니다.
+관리 화면에서 Google Places API 키를 저장하면 사진에서 100m 이내인 Google 장소 중 가장 가까운 하나를 표시합니다. 장소 종류, 인기도, 폴더명에는 별도 점수를 주지 않습니다. API 키와 검색 캐시는 GitHub에 올라가지 않는 `data` 폴더에만 저장됩니다.
 
 - 가까운 GPS 사진을 약 250~300m 지역으로 묶어 한 번만 검색
 - 슬라이드쇼 재생 중에는 Google API를 호출하지 않음
 - 월 4,000회에서 애플리케이션이 자동으로 검색 중지
-- Google 결과가 없거나 중지되면 기존 OpenStreetMap 결과 사용
+- 유형 제한 없이 거리순으로 주변 장소 검색
+- 100m 이내에 Google 장소가 없으면 행정구역만 표시
 - Google 장소 표시 정보는 29일 후 갱신하고 Place ID는 사진 위치 캐시에 보관
-- 폴더명과 일치하는 가까운 정식 호텔·리조트·농장은 유명 장소보다 우선
-- Google에 없는 장소는 폴더에 장소형 이름이 하나뿐이고 모든 GPS가 1km 안에 모일 때만 폴더명으로 자동 보완
 
 Google Cloud에서 Places API (New)를 활성화하고 결제 계정을 연결한 뒤 관리 화면에 키를 입력합니다. 키는 Places API로만 제한하고 Google Cloud에도 별도의 사용량 알림과 할당량을 설정하는 것을 권장합니다.
+
+## 개인 장소
+
+집처럼 항상 같은 이름으로 표시할 장소는 GitHub에 올라가지 않는 `data/locations/private-places.json`에 저장합니다.
+
+```json
+{
+  "places": [
+    {
+      "name": "우리집",
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150
+    }
+  ]
+}
+```
+
+개인 장소는 Google 검색 결과보다 우선하며 거리 문구 없이 지정한 이름만 표시됩니다.
 
 ## 실행
 

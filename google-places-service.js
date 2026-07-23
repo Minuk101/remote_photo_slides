@@ -2,40 +2,14 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const ENDPOINT = 'https://places.googleapis.com/v1/places:searchNearby';
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 const CLUSTER_SIZE_DEGREES = 0.0025;
 const CACHE_TTL_MS = 29 * 24 * 60 * 60 * 1000;
 const FAILED_RETRY_MS = 60 * 60 * 1000;
 const MONTHLY_REQUEST_LIMIT = 4_000;
 const MAX_RESULTS = 20;
-const EXACT_VENUE_SCHEMA_VERSION = 1;
-
-const LANDMARK_TYPES = [
-  'amusement_park', 'aquarium', 'art_gallery', 'botanical_garden', 'castle',
-  'cultural_landmark', 'garden', 'historical_landmark', 'historical_place',
-  'marina', 'monument', 'museum', 'national_park', 'observation_deck', 'park',
-  'scenic_spot', 'state_park', 'tourist_attraction', 'visitor_center',
-  'water_park', 'wildlife_park', 'wildlife_refuge', 'zoo'
-];
-
-const EXACT_VENUE_TYPES = ['farm', 'hotel', 'resort_hotel'];
-
-const EXACT_VENUE_MAX_DISTANCE_KM = {
-  farm: 0.35,
-  hotel: 0.5,
-  resort_hotel: 0.7
-};
-
-const TYPE_RULES = {
-  amusement_park: [180, 4], aquarium: [180, 2], botanical_garden: [145, 2],
-  castle: [150, 1.5], cultural_landmark: [145, 0.6], garden: [125, 0.35],
-  historical_landmark: [145, 0.6], historical_place: [135, 0.6],
-  marina: [105, 1], monument: [135, 0.4], museum: [140, 0.5],
-  national_park: [145, 5], observation_deck: [140, 1], park: [100, 1],
-  scenic_spot: [135, 1.5], state_park: [130, 3], tourist_attraction: [125, 0.6],
-  visitor_center: [75, 0.3], water_park: [165, 3], wildlife_park: [155, 3],
-  wildlife_refuge: [135, 3], zoo: [170, 3], art_gallery: [105, 0.5]
-};
+const SEARCH_RADIUS_METERS = 500;
+const MAX_PLACE_DISTANCE_KM = 0.1;
 
 function monthKey(date = new Date()) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -54,58 +28,13 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function normalizedName(value = '') {
-  return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-}
-
-function nameMatchesHints(name, hints = []) {
-  const normalized = normalizedName(name);
-  return hints.some(hint => {
-    const expected = normalizedName(hint);
-    return expected.length >= 2 && (
-      normalized.includes(expected)
-      || expected.includes(normalized)
-      || (expected.length >= 4 && normalized.endsWith(expected.slice(-3)))
-    );
-  });
-}
-
-function bestCandidate(candidates, latitude, longitude, hints = []) {
-  let best = null;
-  let bestScore = 95;
-  candidates.forEach((candidate, popularityIndex) => {
-    const folderMatch = nameMatchesHints(candidate.name, hints);
-    const [typeScore, configuredDistanceKm] = TYPE_RULES[candidate.primaryType] || [90, 0.6];
-    const allowedDistanceKm = candidate.primaryType === 'amusement_park' && !folderMatch
-      ? Math.min(configuredDistanceKm, 0.5)
-      : configuredDistanceKm;
-    const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
-    if (distanceKm > allowedDistanceKm) return;
-    const popularity = Math.max(0, 70 - popularityIndex * 4);
-    const proximity = Math.max(0, 55 * (1 - distanceKm / allowedDistanceKm));
-    const folderMatchScore = folderMatch ? 220 : 0;
-    const score = typeScore + popularity + proximity + folderMatchScore;
-    if (score > bestScore) {
-      best = { ...candidate, distanceKm, score };
-      bestScore = score;
-    }
-  });
-  return best;
-}
-
-function exactVenueCandidate(candidates, latitude, longitude, hints = []) {
-  if (!hints.length) return null;
+function nearestCandidate(candidates, latitude, longitude) {
   let best = null;
   let nearestDistanceKm = Infinity;
   for (const candidate of candidates) {
-    if (hints.length && !nameMatchesHints(candidate.name, hints)) continue;
-    const matchedType = EXACT_VENUE_MAX_DISTANCE_KM[candidate.primaryType]
-      ? candidate.primaryType
-      : '';
-    if (!matchedType) continue;
     const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
-    if (distanceKm > EXACT_VENUE_MAX_DISTANCE_KM[matchedType] || distanceKm >= nearestDistanceKm) continue;
-    best = { ...candidate, distanceKm, matchedType };
+    if (distanceKm > MAX_PLACE_DISTANCE_KM || distanceKm >= nearestDistanceKm) continue;
+    best = { ...candidate, distanceKm };
     nearestDistanceKm = distanceKm;
   }
   return best;
@@ -152,9 +81,9 @@ export class GooglePlacesService {
     }
     try {
       const parsed = JSON.parse(await readFile(this.cacheFile, 'utf8'));
+      this.usage = parsed.usage || {};
       if (parsed.schema === CACHE_SCHEMA_VERSION) {
         for (const [key, value] of Object.entries(parsed.clusters || {})) this.clusters.set(key, value);
-        this.usage = parsed.usage || {};
       }
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn('Google Places 캐시를 읽지 못했습니다:', error.message);
@@ -213,15 +142,9 @@ export class GooglePlacesService {
     const jobs = [];
     for (const [key, center] of groups) {
       const cached = this.clusters.get(key);
-      const popularPending = !cached
+      const pending = !cached
         || (cached.failedAt ? now - cached.failedAt >= FAILED_RETRY_MS : !cached.fetchedAt || now - cached.fetchedAt >= CACHE_TTL_MS);
-      const exactPending = !cached
-        || cached.exactSchema !== EXACT_VENUE_SCHEMA_VERSION
-        || (cached.exactFailedAt
-          ? now - cached.exactFailedAt >= FAILED_RETRY_MS
-          : !cached.exactFetchedAt || now - cached.exactFetchedAt >= CACHE_TTL_MS);
-      if (popularPending) jobs.push({ key, center, mode: 'popular' });
-      if (exactPending) jobs.push({ key, center, mode: 'exact' });
+      if (pending) jobs.push({ key, center });
     }
     return jobs;
   }
@@ -230,8 +153,7 @@ export class GooglePlacesService {
     return this.pendingJobs(locations).length > 0;
   }
 
-  async search(latitude, longitude, mode = 'popular') {
-    const exact = mode === 'exact';
+  async search(latitude, longitude) {
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: {
@@ -240,12 +162,11 @@ export class GooglePlacesService {
         'X-Goog-FieldMask': 'places.id,places.displayName,places.location,places.primaryType,places.types'
       },
       body: JSON.stringify({
-        includedTypes: exact ? EXACT_VENUE_TYPES : LANDMARK_TYPES,
         maxResultCount: MAX_RESULTS,
-        rankPreference: exact ? 'DISTANCE' : 'POPULARITY',
+        rankPreference: 'DISTANCE',
         languageCode: 'ko',
         locationRestriction: {
-          circle: { center: { latitude, longitude }, radius: exact ? 1000 : 5000 }
+          circle: { center: { latitude, longitude }, radius: SEARCH_RADIUS_METERS }
         }
       }),
       signal: AbortSignal.timeout(20_000)
@@ -263,34 +184,17 @@ export class GooglePlacesService {
     const pending = this.pendingJobs(locations);
     const month = monthKey();
     let completed = 0;
-    for (const { key, center, mode } of pending) {
+    for (const { key, center } of pending) {
       onProgress?.(completed, pending.length, this.status());
       if (!this.enabled || Number(this.usage[month] || 0) >= MONTHLY_REQUEST_LIMIT) break;
       this.usage[month] = Number(this.usage[month] || 0) + 1;
       await this.saveCache();
       try {
-        const candidates = await this.search(center.latitude, center.longitude, mode);
-        const cached = this.clusters.get(key) || {};
-        this.clusters.set(key, mode === 'exact'
-          ? {
-              ...cached,
-              exactSchema: EXACT_VENUE_SCHEMA_VERSION,
-              exactFetchedAt: Date.now(),
-              exactCandidates: candidates,
-              exactFailedAt: null
-            }
-          : { ...cached, fetchedAt: Date.now(), candidates, failedAt: null });
+        const candidates = await this.search(center.latitude, center.longitude);
+        this.clusters.set(key, { fetchedAt: Date.now(), candidates, failedAt: null });
       } catch (error) {
-        console.warn(`Google Places 지역 ${key} ${mode} 조회 실패:`, error.message);
-        const cached = this.clusters.get(key) || {};
-        this.clusters.set(key, mode === 'exact'
-          ? {
-              ...cached,
-              exactSchema: EXACT_VENUE_SCHEMA_VERSION,
-              exactFailedAt: Date.now(),
-              exactCandidates: []
-            }
-          : { ...cached, failedAt: Date.now(), candidates: [] });
+        console.warn(`Google Places 지역 ${key} 조회 실패:`, error.message);
+        this.clusters.set(key, { failedAt: Date.now(), candidates: [] });
         await this.saveCache();
         throw error;
       }
@@ -300,18 +204,10 @@ export class GooglePlacesService {
     onProgress?.(completed, pending.length, this.status());
   }
 
-  find(latitude, longitude, hints = []) {
+  findNearest(latitude, longitude) {
     const cached = this.clusters.get(clusterKey(latitude, longitude));
     if (!cached?.fetchedAt || Date.now() - cached.fetchedAt >= CACHE_TTL_MS) return null;
-    return bestCandidate(cached.candidates || [], latitude, longitude, hints);
-  }
-
-  findExactVenue(latitude, longitude, hints = []) {
-    const cached = this.clusters.get(clusterKey(latitude, longitude));
-    if (cached?.exactSchema !== EXACT_VENUE_SCHEMA_VERSION
-      || !cached.exactFetchedAt
-      || Date.now() - cached.exactFetchedAt >= CACHE_TTL_MS) return null;
-    return exactVenueCandidate(cached.exactCandidates || [], latitude, longitude, hints);
+    return nearestCandidate(cached.candidates || [], latitude, longitude);
   }
 
   async saveCache() {

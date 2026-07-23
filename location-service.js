@@ -2,36 +2,17 @@ import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import exifr from 'exifr';
-import { OsmLandmarkService } from './osm-landmark-service.js';
 import { GooglePlacesService } from './google-places-service.js';
 
 const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
-const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
-const MAX_LANDMARK_DISTANCE_KM = 3;
-const LOCATION_SCHEMA_VERSION = 15;
-const MAX_FOLDER_HINT_SPREAD_KM = 1;
-
-const FOLDER_LANDMARK_SUFFIXES = [
-  '농장', '팜', '호텔', '리조트', '파크', '랜드', '공원', '수목원', '식물원',
-  '수족관', '아쿠아리움', '박물관', '미술관', '전시관', '마을', '시장', '해변',
-  '비치', '숲', '정원', '나라', '힐', '궁', '성', '사찰', '베이커리', '카페', '타워'
-];
-
-const LANDMARK_CODES = new Set([
-  'AIRP', 'AMTH', 'AMUS', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
-  'ISL', 'LK', 'MNMT', 'MSTY', 'MT', 'MUS', 'OPRA', 'PAL', 'PK', 'PRK',
-  'PYR', 'RES', 'RSRT', 'RUIN', 'STDM', 'THTR', 'UNIV', 'VLC', 'ZOO'
-]);
-
-const VERY_LARGE_LANDMARK_CODES = new Set(['AIRP', 'AMUS', 'RSRT']);
-const WIDE_LANDMARK_CODES = new Set(['PRK', 'RES', 'STDM', 'UNIV', 'ZOO']);
-const NATURAL_LANDMARK_CODES = new Set(['BCH', 'CAPE', 'CAVE', 'FLLS', 'GLCR', 'ISL', 'LK', 'MT', 'PK', 'VLC']);
+const LOCATION_SCHEMA_VERSION = 16;
 
 const countryNames = new Intl.DisplayNames(['ko'], { type: 'region' });
 
@@ -52,59 +33,6 @@ function normalizedName(value = '') {
 
 function countryName(countryCode) {
   try { return countryNames.of(countryCode) || countryCode; } catch { return countryCode; }
-}
-
-function folderLandmarkHints(relative = '') {
-  const hints = [];
-  const folders = relative.split('/').slice(0, -1).reverse();
-  for (const folder of folders) {
-    const groups = [...folder.matchAll(/\(([^)]+)\)/g)].map(match => match[1]);
-    for (const group of groups) {
-      const words = group.split(/[,、/&+]|\s+/)
-        .map(value => value.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
-        .filter(value => value.length >= 2 && value.length <= 24);
-      for (const word of words) {
-        if (FOLDER_LANDMARK_SUFFIXES.some(suffix => word.endsWith(suffix)) && !hints.includes(word)) hints.push(word);
-      }
-    }
-  }
-  return hints;
-}
-
-function eventFolderKey(relative = '') {
-  const folders = relative.split('/').slice(0, -1);
-  const eventIndex = folders.findIndex(folder => /\([^)]+\)/.test(folder));
-  return eventIndex >= 0 ? folders.slice(0, eventIndex + 1).join('/') : '';
-}
-
-function trustedFolderLandmarks(metadata) {
-  const groups = new Map();
-  for (const [relative, value] of metadata) {
-    if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-    const key = eventFolderKey(relative);
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, { hints: new Set(), locations: [] });
-    const group = groups.get(key);
-    folderLandmarkHints(relative).forEach(hint => group.hints.add(hint));
-    group.locations.push({ latitude: value.latitude, longitude: value.longitude });
-  }
-
-  const trusted = new Map();
-  for (const [key, group] of groups) {
-    if (group.hints.size !== 1 || !group.locations.length) continue;
-    const center = group.locations.reduce((total, location) => ({
-      latitude: total.latitude + location.latitude / group.locations.length,
-      longitude: total.longitude + location.longitude / group.locations.length
-    }), { latitude: 0, longitude: 0 });
-    const spreadKm = Math.max(...group.locations.map(location => haversineKm(
-      center.latitude,
-      center.longitude,
-      location.latitude,
-      location.longitude
-    )));
-    if (spreadKm <= MAX_FOLDER_HINT_SPREAD_KM) trusted.set(key, [...group.hints][0]);
-  }
-  return trusted;
 }
 
 function isUnlocalizedJapaneseName(name, countryCode) {
@@ -151,35 +79,6 @@ function nearestFromGrid(grid, latitude, longitude, size, maxDistanceKm) {
     if (nearest && nearestDistance <= Math.max(2, radius * size * 70)) break;
   }
   return nearest && nearestDistance <= maxDistanceKm ? { ...nearest, distanceKm: nearestDistance } : null;
-}
-
-function nearestRelevantLandmark(grid, latitude, longitude) {
-  if (!grid) return null;
-  const centerLat = Math.floor((latitude + 90) / LANDMARK_GRID_SIZE);
-  const centerLon = Math.floor((longitude + 180) / LANDMARK_GRID_SIZE);
-  const maxRadius = Math.ceil(MAX_LANDMARK_DISTANCE_KM / (LANDMARK_GRID_SIZE * 90));
-  let best = null;
-  let bestScore = Infinity;
-
-  for (let latOffset = -maxRadius; latOffset <= maxRadius; latOffset++) {
-    for (let lonOffset = -maxRadius; lonOffset <= maxRadius; lonOffset++) {
-      const items = grid.get(`${centerLat + latOffset}:${centerLon + lonOffset}`) || [];
-      for (const item of items) {
-        const distanceKm = haversineKm(latitude, longitude, item.latitude, item.longitude);
-        const allowedDistance = VERY_LARGE_LANDMARK_CODES.has(item.featureCode)
-          ? 3
-          : (WIDE_LANDMARK_CODES.has(item.featureCode) || NATURAL_LANDMARK_CODES.has(item.featureCode)) ? 1 : 0.3;
-        if (distanceKm > allowedDistance) continue;
-        const score = distanceKm / allowedDistance;
-        if (score < bestScore) {
-          best = item;
-          bestScore = score;
-          best.distanceKm = distanceKm;
-        }
-      }
-    }
-  }
-  return best;
 }
 
 function ringContainsPoint(ring, longitude, latitude) {
@@ -257,16 +156,18 @@ export class LocationService {
   constructor(dataDirectory) {
     this.dataDirectory = dataDirectory;
     this.cacheFile = path.join(dataDirectory, 'photo-locations.json');
+    this.privatePlacesFile = path.join(dataDirectory, 'private-places.json');
     this.citiesZip = path.join(dataDirectory, 'cities500.zip');
     this.countryInfoFile = path.join(dataDirectory, 'countryInfo.txt');
     this.metadata = new Map();
     this.cityGrid = null;
-    this.landmarkGrids = new Map();
+    this.countryAdminNames = new Map();
     this.adminBoundaries = new Map();
     this.iso3Codes = new Map();
-    this.countryJobs = new Map();
-    this.osmLandmarks = new OsmLandmarkService(dataDirectory);
+    this.countryNameJobs = new Map();
     this.googlePlaces = new GooglePlacesService(dataDirectory);
+    this.privatePlaces = [];
+    this.locationSchema = `${LOCATION_SCHEMA_VERSION}:none`;
     this.preparePromise = null;
     this.indexPromise = null;
     this.status = { phase: '대기 중', total: 0, checked: 0, gps: 0, ready: 0 };
@@ -275,13 +176,39 @@ export class LocationService {
   async loadCache() {
     await mkdir(this.dataDirectory, { recursive: true });
     try {
+      const parsed = JSON.parse(await readFile(this.privatePlacesFile, 'utf8'));
+      this.privatePlaces = (Array.isArray(parsed.places) ? parsed.places : []).filter(place => (
+        typeof place.name === 'string'
+        && Number.isFinite(place.latitude)
+        && Number.isFinite(place.longitude)
+        && Number.isFinite(place.radiusMeters)
+        && place.radiusMeters > 0
+      ));
+    } catch (error) {
+      if (error.code !== 'ENOENT') console.warn('개인 장소 설정을 읽지 못했습니다:', error.message);
+    }
+    const privatePlacesHash = crypto.createHash('sha256')
+      .update(JSON.stringify(this.privatePlaces))
+      .digest('hex')
+      .slice(0, 12);
+    this.locationSchema = `${LOCATION_SCHEMA_VERSION}:${privatePlacesHash}`;
+    try {
       const parsed = JSON.parse(await readFile(this.cacheFile, 'utf8'));
       for (const [relative, value] of Object.entries(parsed)) this.metadata.set(relative, value);
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn('GPS 캐시를 읽지 못했습니다:', error.message);
     }
-    await this.osmLandmarks.loadCache();
     await this.googlePlaces.load();
+  }
+
+  nearestPrivatePlace(latitude, longitude) {
+    let nearest = null;
+    for (const place of this.privatePlaces) {
+      const distanceKm = haversineKm(latitude, longitude, place.latitude, place.longitude);
+      if (distanceKm * 1000 > place.radiusMeters || (nearest && distanceKm >= nearest.distanceKm)) continue;
+      nearest = { ...place, distanceKm };
+    }
+    return nearest;
   }
 
   getStatus() {
@@ -351,16 +278,15 @@ export class LocationService {
     return nearestFromGrid(this.cityGrid, latitude, longitude, CITY_GRID_SIZE, MAX_CITY_DISTANCE_KM);
   }
 
-  async loadCountryLandmarks(countryCode) {
+  async loadCountryAdminNames(countryCode) {
     if (!countryCode) return null;
-    if (this.landmarkGrids.has(countryCode)) return this.landmarkGrids.get(countryCode);
-    if (this.countryJobs.has(countryCode)) return this.countryJobs.get(countryCode);
+    if (this.countryAdminNames.has(countryCode)) return this.countryAdminNames.get(countryCode);
+    if (this.countryNameJobs.has(countryCode)) return this.countryNameJobs.get(countryCode);
 
     const job = (async () => {
       const zipPath = path.join(this.dataDirectory, `${countryCode}.zip`);
       await download(`${GEONAMES_BASE}/${countryCode}.zip`, zipPath);
       const text = zipText(zipPath, `${countryCode}.txt`);
-      const grid = new Map();
       const adminNames = new Map();
       for (const line of text.split('\n')) {
         if (!line) continue;
@@ -370,23 +296,12 @@ export class LocationService {
           adminNames.set(normalizedName(fields[1]), localName);
           adminNames.set(normalizedName(fields[2]), localName);
         }
-        if (!LANDMARK_CODES.has(fields[7])) continue;
-        const latitude = Number(fields[4]);
-        const longitude = Number(fields[5]);
-        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
-        addToGrid(grid, {
-          latitude,
-          longitude,
-          name: localizedName(fields[1], fields[2], fields[3]),
-          featureCode: fields[7]
-        }, LANDMARK_GRID_SIZE);
       }
-      const bundle = { grid, adminNames };
-      this.landmarkGrids.set(countryCode, bundle);
-      return bundle;
-    })().finally(() => this.countryJobs.delete(countryCode));
+      this.countryAdminNames.set(countryCode, adminNames);
+      return adminNames;
+    })().finally(() => this.countryNameJobs.delete(countryCode));
 
-    this.countryJobs.set(countryCode, job);
+    this.countryNameJobs.set(countryCode, job);
     return job;
   }
 
@@ -421,7 +336,7 @@ export class LocationService {
     const target = path.join(this.dataDirectory, `${countryCode}-${level}.geojson`);
     await download(metadata.simplifiedGeometryGeoJSON, target);
     const geojson = JSON.parse(await readFile(target, 'utf8'));
-    const adminNames = this.landmarkGrids.get(countryCode)?.adminNames || new Map();
+    const adminNames = this.countryAdminNames.get(countryCode) || new Map();
     const features = (geojson.features || []).map(feature => {
       const sourceName = feature.properties?.shapeName || '';
       const simpleName = sourceName.replace(/\s*\[.*?\]\s*/g, '');
@@ -456,10 +371,9 @@ export class LocationService {
       return !cached
         || cached.signature !== `${file.modifiedAt}-${file.size}`
         || !cached.resolved
-        || cached.locationSchema !== LOCATION_SCHEMA_VERSION;
+        || cached.locationSchema !== this.locationSchema;
     })
       || [...this.metadata.keys()].some(relative => !current.has(relative))
-      || this.osmLandmarks.hasPending([...this.metadata.values()])
       || this.googlePlaces.hasPending([...this.metadata.values()])
       || (!this.googlePlaces.enabled && [...this.metadata.values()].some(value => value.landmarkSource === 'google'));
     if (!needsWork) {
@@ -515,12 +429,12 @@ export class LocationService {
           city: city?.name || '',
           countryCode: city?.countryCode || '',
           country: city?.countryCode ? countryName(city.countryCode) : '',
-          locationSchema: LOCATION_SCHEMA_VERSION,
+          locationSchema: this.locationSchema,
           resolved: false
         });
         this.status.gps++;
       } else {
-        this.metadata.set(file.relative, { signature, locationSchema: LOCATION_SCHEMA_VERSION, resolved: true });
+        this.metadata.set(file.relative, { signature, locationSchema: this.locationSchema, resolved: true });
       }
       this.status.checked++;
       sinceSave++;
@@ -535,9 +449,9 @@ export class LocationService {
       .map(value => value.countryCode)
       .filter(Boolean))];
     for (const countryCode of countries) {
-      this.status.phase = `${countryName(countryCode)} 랜드마크 준비 중`;
-      try { await this.loadCountryLandmarks(countryCode); } catch (error) {
-        console.warn(`${countryCode} 랜드마크 데이터를 준비하지 못했습니다:`, error.message);
+      this.status.phase = `${countryName(countryCode)} 지역명 준비 중`;
+      try { await this.loadCountryAdminNames(countryCode); } catch (error) {
+        console.warn(`${countryCode} 지역명 데이터를 준비하지 못했습니다:`, error.message);
       }
       this.status.phase = `${countryName(countryCode)} 행정구역 준비 중`;
       try { await this.loadAdminBoundaries(countryCode); } catch (error) {
@@ -547,7 +461,7 @@ export class LocationService {
 
     this.status.phase = '가까운 장소 계산 중';
     for (const value of this.metadata.values()) {
-      value.locationSchema = LOCATION_SCHEMA_VERSION;
+      value.locationSchema = this.locationSchema;
       value.resolved = true;
       value.landmark = '';
       value.landmarkDistanceMeters = null;
@@ -563,27 +477,6 @@ export class LocationService {
         value.longitude
       );
       if (administrativeArea) value.city = administrativeArea;
-      const grid = this.landmarkGrids.get(value.countryCode)?.grid;
-      const landmark = nearestRelevantLandmark(grid, value.latitude, value.longitude);
-      if (landmark && landmark.name !== value.city) {
-        value.landmark = landmark.name;
-        value.landmarkDistanceMeters = Math.round(landmark.distanceKm * 1000);
-        value.landmarkSource = 'geonames';
-      }
-    }
-
-    await this.osmLandmarks.ensureTiles([...this.metadata.values()], (completed, total) => {
-      this.status.phase = total
-        ? `유명 장소 자동 검색 중 · ${completed}/${total}개 지역`
-        : '유명 장소 자동 검색 완료';
-    });
-    for (const value of this.metadata.values()) {
-      if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-      const onlineLandmark = this.osmLandmarks.find(value.latitude, value.longitude);
-      if (!onlineLandmark || onlineLandmark.name === value.city) continue;
-      value.landmark = onlineLandmark.name;
-      value.landmarkDistanceMeters = Math.round(onlineLandmark.distanceKm * 1000);
-      value.landmarkSource = 'osm';
     }
 
     let googleError = '';
@@ -591,16 +484,15 @@ export class LocationService {
       try {
         await this.googlePlaces.ensureClusters([...this.metadata.values()], (completed, total, googleStatus) => {
           this.status.phase = total
-            ? `Google 유명 장소 검색 중 · ${completed}/${total}개 지역 · 이번 달 ${googleStatus.usedThisMonth}/${googleStatus.monthlyLimit}회`
-            : 'Google 유명 장소 검색 완료';
+            ? `Google 가까운 장소 검색 중 · ${completed}/${total}개 지역 · 이번 달 ${googleStatus.usedThisMonth}/${googleStatus.monthlyLimit}회`
+            : 'Google 가까운 장소 검색 완료';
         });
       } catch (error) {
         googleError = error.message;
       }
-      for (const [relative, value] of this.metadata) {
+      for (const value of this.metadata.values()) {
         if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-        const hints = folderLandmarkHints(relative);
-        const googleLandmark = this.googlePlaces.find(value.latitude, value.longitude, hints);
+        const googleLandmark = this.googlePlaces.findNearest(value.latitude, value.longitude);
         if (!googleLandmark
           || googleLandmark.name === value.city
           || isUnlocalizedJapaneseName(googleLandmark.name, value.countryCode)) continue;
@@ -609,27 +501,16 @@ export class LocationService {
         value.landmarkSource = 'google';
         value.googlePlaceId = googleLandmark.placeId;
       }
-      for (const [relative, value] of this.metadata) {
-        if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-        const hints = folderLandmarkHints(relative);
-        const exactVenue = this.googlePlaces.findExactVenue(value.latitude, value.longitude, hints);
-        if (!exactVenue
-          || exactVenue.name === value.city
-          || isUnlocalizedJapaneseName(exactVenue.name, value.countryCode)) continue;
-        value.landmark = exactVenue.name;
-        value.landmarkDistanceMeters = Math.round(exactVenue.distanceKm * 1000);
-        value.landmarkSource = 'google';
-        value.googlePlaceId = exactVenue.placeId;
-      }
     }
-    const folderLandmarks = trustedFolderLandmarks(this.metadata);
-    for (const [relative, value] of this.metadata) {
-      if (!Number.isFinite(value.latitude) || value.landmark) continue;
-      const hint = folderLandmarks.get(eventFolderKey(relative)) || '';
-      if (!hint || hint === value.city) continue;
-      value.landmark = hint;
+
+    for (const value of this.metadata.values()) {
+      if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+      const privatePlace = this.nearestPrivatePlace(value.latitude, value.longitude);
+      if (!privatePlace) continue;
+      value.landmark = privatePlace.name;
       value.landmarkDistanceMeters = null;
-      value.landmarkSource = 'folder';
+      value.landmarkSource = 'private';
+      value.googlePlaceId = '';
     }
     await this.saveCache();
     this.status.ready = [...this.metadata.values()].filter(value => value.city || value.landmark).length;
