@@ -14,7 +14,8 @@ const CITY_GRID_SIZE = 0.5;
 const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
 const MAX_LANDMARK_DISTANCE_KM = 3;
-const LOCATION_SCHEMA_VERSION = 13;
+const LOCATION_SCHEMA_VERSION = 14;
+const MAX_FOLDER_HINT_SPREAD_KM = 1;
 
 const FOLDER_LANDMARK_SUFFIXES = [
   '농장', '팜', '호텔', '리조트', '파크', '랜드', '공원', '수목원', '식물원',
@@ -68,6 +69,42 @@ function folderLandmarkHints(relative = '') {
     }
   }
   return hints;
+}
+
+function eventFolderKey(relative = '') {
+  const folders = relative.split('/').slice(0, -1);
+  const eventIndex = folders.findIndex(folder => /\([^)]+\)/.test(folder));
+  return eventIndex >= 0 ? folders.slice(0, eventIndex + 1).join('/') : '';
+}
+
+function trustedFolderLandmarks(metadata) {
+  const groups = new Map();
+  for (const [relative, value] of metadata) {
+    if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+    const key = eventFolderKey(relative);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, { hints: new Set(), locations: [] });
+    const group = groups.get(key);
+    folderLandmarkHints(relative).forEach(hint => group.hints.add(hint));
+    group.locations.push({ latitude: value.latitude, longitude: value.longitude });
+  }
+
+  const trusted = new Map();
+  for (const [key, group] of groups) {
+    if (group.hints.size !== 1 || !group.locations.length) continue;
+    const center = group.locations.reduce((total, location) => ({
+      latitude: total.latitude + location.latitude / group.locations.length,
+      longitude: total.longitude + location.longitude / group.locations.length
+    }), { latitude: 0, longitude: 0 });
+    const spreadKm = Math.max(...group.locations.map(location => haversineKm(
+      center.latitude,
+      center.longitude,
+      location.latitude,
+      location.longitude
+    )));
+    if (spreadKm <= MAX_FOLDER_HINT_SPREAD_KM) trusted.set(key, [...group.hints][0]);
+  }
+  return trusted;
 }
 
 function isUnlocalizedJapaneseName(name, countryCode) {
@@ -585,9 +622,10 @@ export class LocationService {
         value.googlePlaceId = exactVenue.placeId;
       }
     }
+    const folderLandmarks = trustedFolderLandmarks(this.metadata);
     for (const [relative, value] of this.metadata) {
       if (!Number.isFinite(value.latitude) || value.landmark) continue;
-      const hint = folderLandmarkHints(relative)[0] || '';
+      const hint = folderLandmarks.get(eventFolderKey(relative)) || '';
       if (!hint || hint === value.city) continue;
       value.landmark = hint;
       value.landmarkDistanceMeters = null;
