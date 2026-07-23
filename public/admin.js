@@ -9,6 +9,10 @@ const elements = {
   serverStatus: document.getElementById('server-status'),
   rootPath: document.getElementById('root-path'),
   locationStatus: document.getElementById('location-status'),
+  googleStatus: document.getElementById('google-status'),
+  googleApiKey: document.getElementById('google-api-key'),
+  saveGoogleKey: document.getElementById('save-google-key'),
+  googleMessage: document.getElementById('google-message'),
   breadcrumbs: document.getElementById('breadcrumbs'),
   folderList: document.getElementById('folder-list'),
   selectCurrent: document.getElementById('select-current'),
@@ -24,6 +28,12 @@ async function refreshLocationStatus() {
     const progress = status.total ? ` · ${status.checked.toLocaleString()}/${status.total.toLocaleString()}장` : '';
     const gps = status.gps ? ` · GPS ${status.gps.toLocaleString()}장` : '';
     elements.locationStatus.textContent = `${status.phase}${progress}${gps}`;
+    const google = status.googlePlaces;
+    elements.googleStatus.textContent = google.configured
+      ? `사용 중 · ${google.usedThisMonth.toLocaleString()}/${google.monthlyLimit.toLocaleString()}회`
+      : 'API 키 필요';
+    elements.googleApiKey.disabled = Boolean(google.configuredByEnvironment);
+    elements.saveGoogleKey.disabled = Boolean(google.configuredByEnvironment);
   } catch {
     elements.locationStatus.textContent = '위치 기능 상태를 확인할 수 없습니다.';
   }
@@ -159,6 +169,32 @@ async function loadFolder(folder) {
 }
 
 elements.selectCurrent.addEventListener('click', () => toggleSelection(state.currentPath));
+
+elements.saveGoogleKey.addEventListener('click', async () => {
+  const apiKey = elements.googleApiKey.value.trim();
+  if (!apiKey && !confirm('Google Places 사용을 끌까요? 기존 무료 위치 검색 방식은 계속 작동합니다.')) return;
+  elements.saveGoogleKey.disabled = true;
+  elements.googleMessage.classList.remove('error');
+  elements.googleMessage.textContent = apiKey ? '저장하고 Google 랜드마크 검색을 시작합니다.' : 'Google Places 사용을 끄는 중입니다.';
+  try {
+    const result = await api('/api/google-places', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey })
+    });
+    elements.googleApiKey.value = '';
+    const google = result.googlePlaces;
+    elements.googleMessage.textContent = google.configured
+      ? '저장했습니다. 위치 상태에서 검색 진행 상황을 확인할 수 있습니다.'
+      : 'Google Places를 껐습니다. 기존 무료 위치 검색 결과를 사용합니다.';
+    await refreshLocationStatus();
+  } catch (error) {
+    elements.googleMessage.classList.add('error');
+    elements.googleMessage.textContent = error.message;
+  } finally {
+    elements.saveGoogleKey.disabled = false;
+  }
+});
 
 elements.saveButton.addEventListener('click', async () => {
   elements.saveButton.disabled = true;

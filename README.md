@@ -16,6 +16,18 @@
 - OpenStreetMap과 Wikidata를 이용해 유명 장소를 자동 검색하고 PC에 영구 저장
 - 위치 문구를 누르면 API 키 없이 Google 지도에서 좌표 열기
 
+## Google Places 랜드마크 (선택)
+
+관리 화면에서 Google Places API 키를 저장하면 유명 장소를 Google의 인기순 검색 결과로 다시 판별합니다. API 키와 검색 캐시는 GitHub에 올라가지 않는 `data` 폴더에만 저장됩니다.
+
+- 가까운 GPS 사진을 약 250~300m 지역으로 묶어 한 번만 검색
+- 슬라이드쇼 재생 중에는 Google API를 호출하지 않음
+- 월 4,000회에서 애플리케이션이 자동으로 검색 중지
+- Google 결과가 없거나 중지되면 기존 OpenStreetMap 결과 사용
+- Google 장소 표시 정보는 29일 후 갱신하고 Place ID는 사진 위치 캐시에 보관
+
+Google Cloud에서 Places API (New)를 활성화하고 결제 계정을 연결한 뒤 관리 화면에 키를 입력합니다. 키는 Places API로만 제한하고 Google Cloud에도 별도의 사용량 알림과 할당량을 설정하는 것을 권장합니다.
+
 ## 실행
 
 처음 한 번:

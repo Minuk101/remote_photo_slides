@@ -27,6 +27,22 @@
       </div>
     </section>
 
+    <section class="panel google-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-label">더 정확한 랜드마크</p>
+          <h2>Google Places</h2>
+        </div>
+        <span id="google-status" class="count-badge">설정 확인 중</span>
+      </div>
+      <p class="setting-description">API 키는 이 PC에만 저장됩니다. 사진 GPS를 가까운 지역끼리 묶어 검색하며 월 4,000회에서 자동으로 멈춥니다.</p>
+      <div class="api-key-row">
+        <input id="google-api-key" class="api-key-input" type="password" autocomplete="off" placeholder="Google Places API 키">
+        <button id="save-google-key" class="soft-button" type="button">API 키 저장</button>
+      </div>
+      <p id="google-message" class="save-message"></p>
+    </section>
+
     <section class="panel">
       <div class="panel-heading">
         <div>
@@ -52,7 +68,7 @@
         <button id="save-selection" class="save-button" type="button">선택 저장</button>
       </div>
     </section>
-    <footer class="data-credit">위치 데이터 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap 기여자</a> · <a href="https://www.wikidata.org/" target="_blank" rel="noreferrer">Wikidata</a> · <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a> · <a href="https://www.geoboundaries.org/" target="_blank" rel="noreferrer">geoBoundaries</a></footer>
+    <footer class="data-credit">위치 데이터 © Google · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap 기여자</a> · <a href="https://www.wikidata.org/" target="_blank" rel="noreferrer">Wikidata</a> · <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a> · <a href="https://www.geoboundaries.org/" target="_blank" rel="noreferrer">geoBoundaries</a></footer>
   </main>
   <script src="admin.js"></script>
 </body>

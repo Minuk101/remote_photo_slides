@@ -6,6 +6,7 @@ import path from 'node:path';
 import AdmZip from 'adm-zip';
 import exifr from 'exifr';
 import { OsmLandmarkService } from './osm-landmark-service.js';
+import { GooglePlacesService } from './google-places-service.js';
 
 const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
@@ -201,6 +202,7 @@ export class LocationService {
     this.iso3Codes = new Map();
     this.countryJobs = new Map();
     this.osmLandmarks = new OsmLandmarkService(dataDirectory);
+    this.googlePlaces = new GooglePlacesService(dataDirectory);
     this.preparePromise = null;
     this.indexPromise = null;
     this.status = { phase: '대기 중', total: 0, checked: 0, gps: 0, ready: 0 };
@@ -215,10 +217,15 @@ export class LocationService {
       if (error.code !== 'ENOENT') console.warn('GPS 캐시를 읽지 못했습니다:', error.message);
     }
     await this.osmLandmarks.loadCache();
+    await this.googlePlaces.load();
   }
 
   getStatus() {
-    return { ...this.status };
+    return { ...this.status, googlePlaces: this.googlePlaces.status() };
+  }
+
+  async setGooglePlacesApiKey(apiKey) {
+    return this.googlePlaces.setApiKey(apiKey);
   }
 
   get(file) {
@@ -230,7 +237,8 @@ export class LocationService {
       city: value.city || '',
       country: value.country || '',
       landmark: value.landmark || '',
-      landmarkDistanceMeters: value.landmarkDistanceMeters || null
+      landmarkDistanceMeters: value.landmarkDistanceMeters || null,
+      landmarkSource: value.landmarkSource || ''
     };
   }
 
@@ -387,7 +395,9 @@ export class LocationService {
         || cached.locationSchema !== LOCATION_SCHEMA_VERSION;
     })
       || [...this.metadata.keys()].some(relative => !current.has(relative))
-      || this.osmLandmarks.hasPending([...this.metadata.values()]);
+      || this.osmLandmarks.hasPending([...this.metadata.values()])
+      || this.googlePlaces.hasPending([...this.metadata.values()])
+      || (!this.googlePlaces.enabled && [...this.metadata.values()].some(value => value.landmarkSource === 'google'));
     if (!needsWork) {
       this.status = {
         phase: '위치 정보 준비 완료',
@@ -477,6 +487,7 @@ export class LocationService {
       value.resolved = true;
       value.landmark = '';
       value.landmarkDistanceMeters = null;
+      value.landmarkSource = '';
       if (!Number.isFinite(value.latitude)) continue;
       if (!value.countryCode) {
         continue;
@@ -492,6 +503,7 @@ export class LocationService {
       if (landmark && landmark.name !== value.city) {
         value.landmark = landmark.name;
         value.landmarkDistanceMeters = Math.round(landmark.distanceKm * 1000);
+        value.landmarkSource = 'geonames';
       }
     }
 
@@ -506,10 +518,35 @@ export class LocationService {
       if (!onlineLandmark || onlineLandmark.name === value.city) continue;
       value.landmark = onlineLandmark.name;
       value.landmarkDistanceMeters = Math.round(onlineLandmark.distanceKm * 1000);
+      value.landmarkSource = 'osm';
+    }
+
+    let googleError = '';
+    if (this.googlePlaces.enabled) {
+      try {
+        await this.googlePlaces.ensureClusters([...this.metadata.values()], (completed, total, googleStatus) => {
+          this.status.phase = total
+            ? `Google 유명 장소 검색 중 · ${completed}/${total}개 지역 · 이번 달 ${googleStatus.usedThisMonth}/${googleStatus.monthlyLimit}회`
+            : 'Google 유명 장소 검색 완료';
+        });
+      } catch (error) {
+        googleError = error.message;
+      }
+      for (const value of this.metadata.values()) {
+        if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+        const googleLandmark = this.googlePlaces.find(value.latitude, value.longitude);
+        if (!googleLandmark || googleLandmark.name === value.city) continue;
+        value.landmark = googleLandmark.name;
+        value.landmarkDistanceMeters = Math.round(googleLandmark.distanceKm * 1000);
+        value.landmarkSource = 'google';
+        value.googlePlaceId = googleLandmark.placeId;
+      }
     }
     await this.saveCache();
     this.status.ready = [...this.metadata.values()].filter(value => value.city || value.landmark).length;
-    this.status.phase = '위치 정보 준비 완료';
+    this.status.phase = googleError
+      ? `위치 정보 준비 완료 · Google 검색 실패: ${googleError}`
+      : '위치 정보 준비 완료';
   }
 
   async saveCache() {

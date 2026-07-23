@@ -325,6 +325,14 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, locationService.getStatus());
     }
 
+    if (request.method === 'PUT' && url.pathname === '/api/google-places') {
+      const body = await readBody(request);
+      const googlePlaces = await locationService.setGooglePlacesApiKey(body.apiKey);
+      manifestDirty = true;
+      scanPhotos(true).catch(error => console.warn('Google 장소 검색을 시작하지 못했습니다:', error.message));
+      return json(response, 200, { googlePlaces });
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/folders') {
       const currentPath = safeRelative(url.searchParams.get('path') || '');
       const folders = await listFolders(currentPath);
