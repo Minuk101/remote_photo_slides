@@ -14,7 +14,13 @@ const CITY_GRID_SIZE = 0.5;
 const LANDMARK_GRID_SIZE = 0.1;
 const MAX_CITY_DISTANCE_KM = 250;
 const MAX_LANDMARK_DISTANCE_KM = 3;
-const LOCATION_SCHEMA_VERSION = 8;
+const LOCATION_SCHEMA_VERSION = 13;
+
+const FOLDER_LANDMARK_SUFFIXES = [
+  '농장', '팜', '호텔', '리조트', '파크', '랜드', '공원', '수목원', '식물원',
+  '수족관', '아쿠아리움', '박물관', '미술관', '전시관', '마을', '시장', '해변',
+  '비치', '숲', '정원', '나라', '힐', '궁', '성', '사찰', '베이커리', '카페', '타워'
+];
 
 const LANDMARK_CODES = new Set([
   'AIRP', 'AMTH', 'AMUS', 'ARCH', 'BCH', 'CAPE', 'CAVE', 'CSTL', 'FLLS', 'GLCR',
@@ -45,6 +51,27 @@ function normalizedName(value = '') {
 
 function countryName(countryCode) {
   try { return countryNames.of(countryCode) || countryCode; } catch { return countryCode; }
+}
+
+function folderLandmarkHints(relative = '') {
+  const hints = [];
+  const folders = relative.split('/').slice(0, -1).reverse();
+  for (const folder of folders) {
+    const groups = [...folder.matchAll(/\(([^)]+)\)/g)].map(match => match[1]);
+    for (const group of groups) {
+      const words = group.split(/[,、/&+]|\s+/)
+        .map(value => value.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+        .filter(value => value.length >= 2 && value.length <= 24);
+      for (const word of words) {
+        if (FOLDER_LANDMARK_SUFFIXES.some(suffix => word.endsWith(suffix)) && !hints.includes(word)) hints.push(word);
+      }
+    }
+  }
+  return hints;
+}
+
+function isUnlocalizedJapaneseName(name, countryCode) {
+  return countryCode === 'JP' && !/[가-힣]/.test(name) && /[ぁ-んァ-ヶ一-龯]/u.test(name);
 }
 
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -488,6 +515,7 @@ export class LocationService {
       value.landmark = '';
       value.landmarkDistanceMeters = null;
       value.landmarkSource = '';
+      value.googlePlaceId = '';
       if (!Number.isFinite(value.latitude)) continue;
       if (!value.countryCode) {
         continue;
@@ -532,15 +560,38 @@ export class LocationService {
       } catch (error) {
         googleError = error.message;
       }
-      for (const value of this.metadata.values()) {
+      for (const [relative, value] of this.metadata) {
         if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-        const googleLandmark = this.googlePlaces.find(value.latitude, value.longitude);
-        if (!googleLandmark || googleLandmark.name === value.city) continue;
+        const hints = folderLandmarkHints(relative);
+        const googleLandmark = this.googlePlaces.find(value.latitude, value.longitude, hints);
+        if (!googleLandmark
+          || googleLandmark.name === value.city
+          || isUnlocalizedJapaneseName(googleLandmark.name, value.countryCode)) continue;
         value.landmark = googleLandmark.name;
         value.landmarkDistanceMeters = Math.round(googleLandmark.distanceKm * 1000);
         value.landmarkSource = 'google';
         value.googlePlaceId = googleLandmark.placeId;
       }
+      for (const [relative, value] of this.metadata) {
+        if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+        const hints = folderLandmarkHints(relative);
+        const exactVenue = this.googlePlaces.findExactVenue(value.latitude, value.longitude, hints);
+        if (!exactVenue
+          || exactVenue.name === value.city
+          || isUnlocalizedJapaneseName(exactVenue.name, value.countryCode)) continue;
+        value.landmark = exactVenue.name;
+        value.landmarkDistanceMeters = Math.round(exactVenue.distanceKm * 1000);
+        value.landmarkSource = 'google';
+        value.googlePlaceId = exactVenue.placeId;
+      }
+    }
+    for (const [relative, value] of this.metadata) {
+      if (!Number.isFinite(value.latitude) || value.landmark) continue;
+      const hint = folderLandmarkHints(relative)[0] || '';
+      if (!hint || hint === value.city) continue;
+      value.landmark = hint;
+      value.landmarkDistanceMeters = null;
+      value.landmarkSource = 'folder';
     }
     await this.saveCache();
     this.status.ready = [...this.metadata.values()].filter(value => value.city || value.landmark).length;
