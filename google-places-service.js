@@ -10,6 +10,11 @@ const MONTHLY_REQUEST_LIMIT = 4_000;
 const MAX_RESULTS = 20;
 const SEARCH_RADIUS_METERS = 500;
 const MAX_PLACE_DISTANCE_KM = 0.1;
+const NON_VISITOR_PRIMARY_TYPES = new Set([
+  '', 'corporate_office', 'electrician', 'general_contractor', 'manufacturer',
+  'point_of_interest', 'research_institute', 'service', 'storage',
+  'telecommunications_service_provider', 'wholesaler'
+]);
 
 function monthKey(date = new Date()) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -28,10 +33,19 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function isKoreanVisitorPlace(candidate) {
+  const letters = candidate.name.match(/\p{L}/gu) || [];
+  return letters.length > 0
+    && letters.every(letter => /[가-힣]/.test(letter))
+    && !NON_VISITOR_PRIMARY_TYPES.has(candidate.primaryType)
+    && !/주식회사|\(주\)/.test(candidate.name);
+}
+
 function nearestCandidate(candidates, latitude, longitude) {
   let best = null;
   let nearestDistanceKm = Infinity;
   for (const candidate of candidates) {
+    if (!isKoreanVisitorPlace(candidate)) continue;
     const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
     if (distanceKm > MAX_PLACE_DISTANCE_KM || distanceKm >= nearestDistanceKm) continue;
     best = { ...candidate, distanceKm };
