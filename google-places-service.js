@@ -19,12 +19,12 @@ const LANDMARK_TYPES = [
 
 const TYPE_RULES = {
   amusement_park: [180, 4], aquarium: [180, 2], botanical_garden: [145, 2],
-  castle: [150, 1.5], cultural_landmark: [145, 1.5], garden: [125, 1.5],
-  historical_landmark: [145, 1.2], historical_place: [135, 1.2],
-  marina: [105, 1], monument: [135, 0.8], museum: [140, 0.8],
+  castle: [150, 1.5], cultural_landmark: [145, 0.6], garden: [125, 0.35],
+  historical_landmark: [145, 0.6], historical_place: [135, 0.6],
+  marina: [105, 1], monument: [135, 0.4], museum: [140, 0.5],
   national_park: [145, 5], observation_deck: [140, 1], park: [100, 1],
-  scenic_spot: [135, 1.5], state_park: [130, 3], tourist_attraction: [125, 1.5],
-  visitor_center: [75, 0.5], water_park: [165, 3], wildlife_park: [155, 3],
+  scenic_spot: [135, 1.5], state_park: [130, 3], tourist_attraction: [125, 0.6],
+  visitor_center: [75, 0.3], water_park: [165, 3], wildlife_park: [155, 3],
   wildlife_refuge: [135, 3], zoo: [170, 3], art_gallery: [105, 0.5]
 };
 
