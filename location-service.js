@@ -212,6 +212,20 @@ export class LocationService {
     return nearest;
   }
 
+  nearestPrivateRegion(latitude, longitude) {
+    let nearest = null;
+    for (const place of this.privatePlaces) {
+      if (typeof place.city !== 'string' || !place.city) continue;
+      const distanceKm = haversineKm(latitude, longitude, place.latitude, place.longitude);
+      const radiusMeters = Number.isFinite(place.cityRadiusMeters) && place.cityRadiusMeters > 0
+        ? place.cityRadiusMeters
+        : place.radiusMeters;
+      if (distanceKm * 1000 > radiusMeters || (nearest && distanceKm >= nearest.distanceKm)) continue;
+      nearest = { ...place, distanceKm };
+    }
+    return nearest;
+  }
+
   getStatus() {
     return { ...this.status, googlePlaces: this.googlePlaces.status() };
   }
@@ -507,6 +521,8 @@ export class LocationService {
 
     for (const value of this.metadata.values()) {
       if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
+      const privateRegion = this.nearestPrivateRegion(value.latitude, value.longitude);
+      if (privateRegion) value.city = privateRegion.city;
       const privatePlace = this.nearestPrivatePlace(value.latitude, value.longitude);
       if (!privatePlace) continue;
       value.landmark = privatePlace.name;
