@@ -100,11 +100,14 @@ function positionAt(points, time) {
   const next = points[index];
   if (!previous && !next) return null;
 
-  if (previous && next && previous.segment === next.segment) {
+  if (previous && next) {
     const gapSeconds = (next.time - previous.time) / 1000;
     const endpointDistance = haversineKm(previous.latitude, previous.longitude, next.latitude, next.longitude);
-    const canInterpolate = gapSeconds <= MAX_INTERPOLATION_SECONDS
-      || (gapSeconds <= MAX_STATIONARY_SECONDS && endpointDistance <= MAX_STATIONARY_DISTANCE_KM);
+    const canInterpolateWithinSegment = previous.segment === next.segment
+      && gapSeconds <= MAX_INTERPOLATION_SECONDS;
+    const canBridgeStationarySegments = gapSeconds <= MAX_STATIONARY_SECONDS
+      && endpointDistance <= MAX_STATIONARY_DISTANCE_KM;
+    const canInterpolate = canInterpolateWithinSegment || canBridgeStationarySegments;
     if (canInterpolate && next.time > previous.time) {
       const ratio = (time - previous.time) / (next.time - previous.time);
       return {
@@ -145,14 +148,17 @@ async function writeGpsAssignments(assignments) {
   const parentDirectories = [...new Set(roots.map(root => path.dirname(path.resolve(root))))];
   if (parentDirectories.length !== 1) throw new Error('사진 폴더들은 같은 상위 폴더 안에 있어야 합니다.');
   const workingDirectory = parentDirectories[0];
-  const scanRoots = roots.map(root => path.relative(workingDirectory, path.resolve(root)) || '.');
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'timeline-geotag-'));
   const csvPath = path.join(temporaryDirectory, 'assignments.csv');
+  const argumentPath = path.join(temporaryDirectory, 'files.args');
   const rows = ['SourceFile,GPSLatitude,GPSLatitudeRef,GPSLongitude,GPSLongitudeRef,GPSDateStamp,GPSTimeStamp,GPSMapDatum'];
+  const fileArguments = [];
   for (const assignment of assignments) {
     const gps = isoGpsParts(assignment.gpsTime);
+    const relativeSource = path.relative(workingDirectory, path.resolve(assignment.sourceFile)).split(path.sep).join('/');
+    fileArguments.push(relativeSource);
     rows.push([
-      path.relative(workingDirectory, path.resolve(assignment.sourceFile)).split(path.sep).join('/'),
+      relativeSource,
       Math.abs(assignment.latitude).toFixed(8),
       assignment.latitude < 0 ? 'S' : 'N',
       Math.abs(assignment.longitude).toFixed(8),
@@ -163,12 +169,13 @@ async function writeGpsAssignments(assignments) {
     ].map(csvCell).join(','));
   }
   await writeFile(csvPath, `${rows.join('\n')}\n`, 'utf8');
+  await writeFile(argumentPath, `${fileArguments.join('\n')}\n`, 'utf8');
   console.log(`GPS가 없는 ${assignments.length}장에 메타데이터를 기록하는 중입니다...`);
   try {
     const { stdout, stderr } = await execFileAsync('exiftool', [
       '-q', '-q', '-charset', 'filename=utf8', '-overwrite_original', '-P',
       '-if', 'not $GPSLatitude and not $GPSLongitude', `-csv=${csvPath}`,
-      '-r', '-ext', 'jpg', '-ext', 'jpeg', ...scanRoots
+      '-@', argumentPath
     ], {
       cwd: workingDirectory,
       encoding: 'utf8',
