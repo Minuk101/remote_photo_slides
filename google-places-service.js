@@ -74,13 +74,17 @@ function bestCandidate(candidates, latitude, longitude, hints = []) {
   let best = null;
   let bestScore = 95;
   candidates.forEach((candidate, popularityIndex) => {
-    const [typeScore, allowedDistanceKm] = TYPE_RULES[candidate.primaryType] || [90, 0.6];
+    const folderMatch = nameMatchesHints(candidate.name, hints);
+    const [typeScore, configuredDistanceKm] = TYPE_RULES[candidate.primaryType] || [90, 0.6];
+    const allowedDistanceKm = candidate.primaryType === 'amusement_park' && !folderMatch
+      ? Math.min(configuredDistanceKm, 0.5)
+      : configuredDistanceKm;
     const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
     if (distanceKm > allowedDistanceKm) return;
     const popularity = Math.max(0, 70 - popularityIndex * 4);
     const proximity = Math.max(0, 55 * (1 - distanceKm / allowedDistanceKm));
-    const folderMatch = nameMatchesHints(candidate.name, hints) ? 220 : 0;
-    const score = typeScore + popularity + proximity + folderMatch;
+    const folderMatchScore = folderMatch ? 220 : 0;
+    const score = typeScore + popularity + proximity + folderMatchScore;
     if (score > bestScore) {
       best = { ...candidate, distanceKm, score };
       bestScore = score;
