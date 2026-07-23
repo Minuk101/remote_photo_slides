@@ -12,7 +12,7 @@ const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
 const MAX_CITY_DISTANCE_KM = 250;
-const LOCATION_SCHEMA_VERSION = 18;
+const LOCATION_SCHEMA_VERSION = 19;
 
 const countryNames = new Intl.DisplayNames(['ko'], { type: 'region' });
 
@@ -508,7 +508,7 @@ export class LocationService {
       }
       for (const value of this.metadata.values()) {
         if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) continue;
-        const googleLandmark = this.googlePlaces.findNearest(value.latitude, value.longitude);
+        const googleLandmark = this.googlePlaces.findBest(value.latitude, value.longitude);
         if (!googleLandmark
           || googleLandmark.name === value.city
           || !isKoreanDisplayName(googleLandmark.name)) continue;

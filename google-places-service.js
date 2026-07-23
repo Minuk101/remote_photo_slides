@@ -2,14 +2,15 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const ENDPOINT = 'https://places.googleapis.com/v1/places:searchNearby';
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 const CLUSTER_SIZE_DEGREES = 0.0025;
 const CACHE_TTL_MS = 29 * 24 * 60 * 60 * 1000;
 const FAILED_RETRY_MS = 60 * 60 * 1000;
 const MONTHLY_REQUEST_LIMIT = 4_000;
 const MAX_RESULTS = 20;
 const SEARCH_RADIUS_METERS = 500;
-const MAX_PLACE_DISTANCE_KM = 0.1;
+const MAX_EXACT_DISTANCE_KM = 0.03;
+const MAX_POPULAR_DISTANCE_KM = 0.3;
 const NON_VISITOR_PRIMARY_TYPES = new Set([
   '', 'corporate_office', 'electrician', 'general_contractor', 'manufacturer',
   'point_of_interest', 'research_institute', 'service', 'storage',
@@ -41,17 +42,26 @@ function isKoreanVisitorPlace(candidate) {
     && !/주식회사|\(주\)/.test(candidate.name);
 }
 
-function nearestCandidate(candidates, latitude, longitude) {
+function nearestCandidate(candidates, latitude, longitude, maxDistanceKm) {
   let best = null;
   let nearestDistanceKm = Infinity;
   for (const candidate of candidates) {
     if (!isKoreanVisitorPlace(candidate)) continue;
     const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
-    if (distanceKm > MAX_PLACE_DISTANCE_KM || distanceKm >= nearestDistanceKm) continue;
+    if (distanceKm > maxDistanceKm || distanceKm >= nearestDistanceKm) continue;
     best = { ...candidate, distanceKm };
     nearestDistanceKm = distanceKm;
   }
   return best;
+}
+
+function popularCandidate(candidates, latitude, longitude) {
+  for (const candidate of candidates) {
+    if (!isKoreanVisitorPlace(candidate)) continue;
+    const distanceKm = haversineKm(latitude, longitude, candidate.latitude, candidate.longitude);
+    if (distanceKm <= MAX_POPULAR_DISTANCE_KM) return { ...candidate, distanceKm };
+  }
+  return null;
 }
 
 function compactPlace(place) {
@@ -98,6 +108,14 @@ export class GooglePlacesService {
       this.usage = parsed.usage || {};
       if (parsed.schema === CACHE_SCHEMA_VERSION) {
         for (const [key, value] of Object.entries(parsed.clusters || {})) this.clusters.set(key, value);
+      } else if (parsed.schema === 2) {
+        for (const [key, value] of Object.entries(parsed.clusters || {})) {
+          this.clusters.set(key, {
+            distanceFetchedAt: value.fetchedAt,
+            distanceCandidates: value.candidates || [],
+            distanceFailedAt: value.failedAt || null
+          });
+        }
       }
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn('Google Places 캐시를 읽지 못했습니다:', error.message);
@@ -156,9 +174,14 @@ export class GooglePlacesService {
     const jobs = [];
     for (const [key, center] of groups) {
       const cached = this.clusters.get(key);
-      const pending = !cached
-        || (cached.failedAt ? now - cached.failedAt >= FAILED_RETRY_MS : !cached.fetchedAt || now - cached.fetchedAt >= CACHE_TTL_MS);
-      if (pending) jobs.push({ key, center });
+      const distancePending = cached?.distanceFailedAt
+        ? now - cached.distanceFailedAt >= FAILED_RETRY_MS
+        : !cached?.distanceFetchedAt || now - cached.distanceFetchedAt >= CACHE_TTL_MS;
+      const popularPending = cached?.popularFailedAt
+        ? now - cached.popularFailedAt >= FAILED_RETRY_MS
+        : !cached?.popularFetchedAt || now - cached.popularFetchedAt >= CACHE_TTL_MS;
+      if (distancePending) jobs.push({ key, center, mode: 'distance' });
+      if (popularPending) jobs.push({ key, center, mode: 'popular' });
     }
     return jobs;
   }
@@ -167,7 +190,7 @@ export class GooglePlacesService {
     return this.pendingJobs(locations).length > 0;
   }
 
-  async search(latitude, longitude) {
+  async search(latitude, longitude, mode) {
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: {
@@ -177,7 +200,7 @@ export class GooglePlacesService {
       },
       body: JSON.stringify({
         maxResultCount: MAX_RESULTS,
-        rankPreference: 'DISTANCE',
+        rankPreference: mode === 'popular' ? 'POPULARITY' : 'DISTANCE',
         languageCode: 'ko',
         locationRestriction: {
           circle: { center: { latitude, longitude }, radius: SEARCH_RADIUS_METERS }
@@ -198,17 +221,23 @@ export class GooglePlacesService {
     const pending = this.pendingJobs(locations);
     const month = monthKey();
     let completed = 0;
-    for (const { key, center } of pending) {
+    for (const { key, center, mode } of pending) {
       onProgress?.(completed, pending.length, this.status());
       if (!this.enabled || Number(this.usage[month] || 0) >= MONTHLY_REQUEST_LIMIT) break;
       this.usage[month] = Number(this.usage[month] || 0) + 1;
       await this.saveCache();
       try {
-        const candidates = await this.search(center.latitude, center.longitude);
-        this.clusters.set(key, { fetchedAt: Date.now(), candidates, failedAt: null });
+        const candidates = await this.search(center.latitude, center.longitude, mode);
+        const cached = this.clusters.get(key) || {};
+        this.clusters.set(key, mode === 'popular'
+          ? { ...cached, popularFetchedAt: Date.now(), popularCandidates: candidates, popularFailedAt: null }
+          : { ...cached, distanceFetchedAt: Date.now(), distanceCandidates: candidates, distanceFailedAt: null });
       } catch (error) {
-        console.warn(`Google Places 지역 ${key} 조회 실패:`, error.message);
-        this.clusters.set(key, { failedAt: Date.now(), candidates: [] });
+        console.warn(`Google Places 지역 ${key} ${mode} 조회 실패:`, error.message);
+        const cached = this.clusters.get(key) || {};
+        this.clusters.set(key, mode === 'popular'
+          ? { ...cached, popularFailedAt: Date.now(), popularCandidates: [] }
+          : { ...cached, distanceFailedAt: Date.now(), distanceCandidates: [] });
         await this.saveCache();
         throw error;
       }
@@ -218,10 +247,20 @@ export class GooglePlacesService {
     onProgress?.(completed, pending.length, this.status());
   }
 
-  findNearest(latitude, longitude) {
+  findBest(latitude, longitude) {
     const cached = this.clusters.get(clusterKey(latitude, longitude));
-    if (!cached?.fetchedAt || Date.now() - cached.fetchedAt >= CACHE_TTL_MS) return null;
-    return nearestCandidate(cached.candidates || [], latitude, longitude);
+    const now = Date.now();
+    if (cached?.distanceFetchedAt && now - cached.distanceFetchedAt < CACHE_TTL_MS) {
+      const exact = nearestCandidate(
+        cached.distanceCandidates || [],
+        latitude,
+        longitude,
+        MAX_EXACT_DISTANCE_KM
+      );
+      if (exact) return exact;
+    }
+    if (!cached?.popularFetchedAt || now - cached.popularFetchedAt >= CACHE_TTL_MS) return null;
+    return popularCandidate(cached.popularCandidates || [], latitude, longitude);
   }
 
   async saveCache() {
