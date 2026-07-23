@@ -12,7 +12,7 @@ const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
 const MAX_CITY_DISTANCE_KM = 250;
-const LOCATION_SCHEMA_VERSION = 16;
+const LOCATION_SCHEMA_VERSION = 17;
 
 const countryNames = new Intl.DisplayNames(['ko'], { type: 'region' });
 
@@ -35,8 +35,9 @@ function countryName(countryCode) {
   try { return countryNames.of(countryCode) || countryCode; } catch { return countryCode; }
 }
 
-function isUnlocalizedJapaneseName(name, countryCode) {
-  return countryCode === 'JP' && !/[가-힣]/.test(name) && /[ぁ-んァ-ヶ一-龯]/u.test(name);
+function isKoreanDisplayName(value = '') {
+  const letters = value.match(/\p{L}/gu) || [];
+  return letters.length > 0 && letters.every(letter => /[가-힣]/.test(letter));
 }
 
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -476,7 +477,8 @@ export class LocationService {
         value.latitude,
         value.longitude
       );
-      if (administrativeArea) value.city = administrativeArea;
+      if (isKoreanDisplayName(administrativeArea)) value.city = administrativeArea;
+      if (!isKoreanDisplayName(value.city)) value.city = '';
     }
 
     let googleError = '';
@@ -495,7 +497,7 @@ export class LocationService {
         const googleLandmark = this.googlePlaces.findNearest(value.latitude, value.longitude);
         if (!googleLandmark
           || googleLandmark.name === value.city
-          || isUnlocalizedJapaneseName(googleLandmark.name, value.countryCode)) continue;
+          || !isKoreanDisplayName(googleLandmark.name)) continue;
         value.landmark = googleLandmark.name;
         value.landmarkDistanceMeters = Math.round(googleLandmark.distanceKm * 1000);
         value.landmarkSource = 'google';
