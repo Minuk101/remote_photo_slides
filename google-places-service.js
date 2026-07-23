@@ -12,8 +12,10 @@ const SEARCH_RADIUS_METERS = 500;
 const MAX_EXACT_DISTANCE_KM = 0.03;
 const MAX_POPULAR_DISTANCE_KM = 0.3;
 const NON_VISITOR_PRIMARY_TYPES = new Set([
-  '', 'corporate_office', 'electrician', 'general_contractor', 'manufacturer',
-  'point_of_interest', 'research_institute', 'service', 'storage',
+  '', 'corporate_office', 'educational_institution', 'electrician',
+  'furniture_store', 'general_contractor', 'home_goods_store',
+  'home_improvement_store', 'manufacturer', 'point_of_interest',
+  'research_institute', 'school', 'secondary_school', 'service', 'storage',
   'telecommunications_service_provider', 'wholesaler'
 ]);
 

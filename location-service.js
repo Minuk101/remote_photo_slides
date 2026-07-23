@@ -12,7 +12,7 @@ const GEONAMES_BASE = 'https://download.geonames.org/export/dump';
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen';
 const CITY_GRID_SIZE = 0.5;
 const MAX_CITY_DISTANCE_KM = 250;
-const LOCATION_SCHEMA_VERSION = 19;
+const LOCATION_SCHEMA_VERSION = 20;
 
 const countryNames = new Intl.DisplayNames(['ko'], { type: 'region' });
 
